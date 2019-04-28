@@ -1,0 +1,45 @@
+group 'com.mylnikov'
+version '1.0'
+
+def scalaVersion = '2.11.12'
+def scalaCompatVersion = '2.11'
+def sparkVersion = '2.3.0'
+
+repositories {
+    mavenCentral()
+}
+apply plugin :'scala'
+
+compileScala.targetCompatibility = 1.8
+ScalaCompileOptions.metaClass.useAnt = false
+
+jar {
+    setZip64(true)
+    manifest {
+        attributes "Main-Class": 'com.mylnikov.MessageProcessor'
+    }
+
+    from {
+        configurations.compile.collect { it.isDirectory() && it.toString().contains("spark") && it.toString().contains("hadoop")  ? it : zipTree(it) }
+    }
+
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF','META-INF/*.DSA'
+
+}
+
+
+dependencies {
+    compile group: 'org.apache.kafka', name: 'kafka-clients', version: '2.1.0'
+    compile group: 'org.scala-lang', name: 'scala-library', version: "$scalaVersion"
+    compile group: 'org.apache.spark', name: "spark-streaming-kafka-0-10_$scalaCompatVersion", version: "$sparkVersion"
+    compile group: 'org.apache.spark', name: 'spark-sql_2.11', version: "$sparkVersion"
+    compile group: 'org.apache.spark', name: 'spark-streaming_2.11', version: "$sparkVersion"
+    compile group: 'org.apache.spark', name: "spark-core_$scalaCompatVersion", version: "$sparkVersion"
+
+    compile group: 'org.apache.spark', name: 'spark-sql-kafka-0-10_2.11', version: "$sparkVersion"
+
+    testCompile group: 'com.holdenkarau', name: 'spark-testing-base_2.11', version: '2.4.0_0.11.0'
+    testCompile group: 'org.apache.commons', name: 'commons-io', version: '1.3.2'
+    testCompile group: 'org.scalatest', name: 'scalatest_2.11', version: '3.0.1'
+
+}
