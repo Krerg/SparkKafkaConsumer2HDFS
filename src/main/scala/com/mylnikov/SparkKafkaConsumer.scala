@@ -2,9 +2,8 @@ package com.mylnikov
 
 import com.mylnikov.processor.MessageProcessor
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.sql.functions
 import org.apache.spark.sql.types.{DataTypes, StructType}
-import java.io.BufferedOutputStream
+import java.io.{BufferedOutputStream, BufferedReader, InputStreamReader}
 
 import scala.collection.mutable
 
@@ -17,9 +16,8 @@ object SparkKafkaConsumer {
     */
   def main(args: Array[String]): Unit = {
 
-    if (args.length < 3) {
-      throw new IllegalArgumentException("You should specify kafka topic, kafka broker address, hdfs path")
-    }
+    val conf = new Configuration(args)
+    conf.verify()
 
     var startingOffset = ""
     var endingOffset = ""
@@ -33,61 +31,75 @@ object SparkKafkaConsumer {
 
     // Spark init
     val spark = org.apache.spark.sql.SparkSession.builder
+        .master("local[2]")
       .appName("SparkKafkaConsumer")
       .getOrCreate
 
-    val df = spark
-      .read
-      .format("kafka")
-      .option("kafka.bootstrap.servers", args(1))
-      .option("subscribe", args(0))
-      .option("startingOffsets", startingOffset)
-      .option("endingOffsets", endingOffset)
-      .load()
+    var offsets = conf.startingOffsets().split(",").map(offset => offset.toInt)
 
-    // Message struct
-    val struct = new StructType()
-      .add("userName", DataTypes.StringType)
-      .add("location", DataTypes.StringType)
-      .add("text", DataTypes.StringType)
+    while(true) {
+      val df = spark
+        .read
+        .format("kafka")
+        .option("kafka.bootstrap.servers", conf.bootstrapServer())
+        .option("subscribe", conf.kafkaTopic())
+        .option("startingOffsets", buildJSONOffset(offsets(0), offsets(1), offsets(2), offsets(3), conf.kafkaTopic()))
+        .option("endingOffsets", buildJSONOffset(offsets(0)+conf.batchSize().toInt,
+          offsets(1)+conf.batchSize().toInt,
+          offsets(2)+conf.batchSize().toInt,
+          offsets(3)+conf.batchSize().toInt,
+          conf.kafkaTopic()))
+        .load()
 
-    val messageProcessor = new MessageProcessor()
-    spark.sparkContext.broadcast(messageProcessor)
+      // Message struct
+      val struct = new StructType()
+        .add("text", DataTypes.StringType)
 
-    val batchResult = df.selectExpr("CAST(value AS STRING)", "CAST(timestamp AS LONG) as timestamp").
-      //extract message properties and timestamp
-      select(functions.from_json(functions.col("value"), struct).as("json"), functions.col("timestamp")).select(functions.col("json.*"), functions.col("timestamp")).rdd
-      //aggregate each row to count tags
-      .map(m => messageProcessor.process(m))
-      // reduce result by timestamp and sum tags count
-      .reduceByKey((map1, map2) => map1 ++ map2.map { case (k, v) => k -> (v + map1.getOrElse(k, 0)) })
-      .collect()
+      val messageProcessor = new MessageProcessor()
+      spark.sparkContext.broadcast(messageProcessor)
 
-    // Upload result to hdfs
-    val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
-    val filesIterator = fs.listFiles(new Path("/"), false)
-    var existFiles = mutable.MutableList[String]()
-    while (filesIterator.hasNext) {
-      existFiles += filesIterator.next().getPath.getName
+      import spark.sqlContext.implicits._
+      import org.apache.spark.sql.functions._
+
+      val batchResult = df.selectExpr("CAST(value AS STRING)", "CAST(timestamp AS LONG) as timestamp").
+        //extract message properties and timestamp
+        select(from_json('value, struct).as("json"), 'timestamp).select(col("json.*"), col("timestamp")).rdd
+        //aggregate each row to count tags
+        .map(m => messageProcessor.process(m))
+        // reduce result by timestamp and sum tags count
+        .reduceByKey((map1, map2) => map1 ++ map2.map { case (k, v) => k -> (v + map1.getOrElse(k, 0)) })
+
+
+      // Upload result to hdfs
+      val hdfsPath = if(conf.hdfsPath().last == '/') conf.hdfsPath() else conf.hdfsPath()+"/"
+      val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
+      val filesIterator = fs.listFiles(new Path(hdfsPath), false)
+      var existFiles = mutable.MutableList[String]()
+      while (filesIterator.hasNext) {
+        existFiles += filesIterator.next().getPath.getName
+      }
+
+      // Create new file or update exist
+      batchResult.foreach(result => {
+        if (!existFiles.contains(result._1 + ".txt")) {
+          uploadToHDFS(hdfsPath + result._1 + ".txt", fs, result._2)
+        } else {
+          // File with counts exist so needs to be updated
+          val stream = fs.open(new Path("/" + result._1 + ".txt"))
+          val bufferedReader = new BufferedReader(new InputStreamReader(stream))
+          val values = bufferedReader.readLine()
+          values.split("\\|").foreach(tag => {
+            val Array(tagValue, countValue) = tag.split(":")
+            // Sum counts
+            result._2 += (tagValue -> (result._2.getOrElse(tagValue, 0) + countValue.toInt))
+          })
+          uploadToHDFS(hdfsPath + result._1 + ".txt", fs, result._2)
+        }
+      })
+      offsets = offsets.map(offset => offset+conf.batchSize().toInt)
     }
 
-    // Create new file or update exist
-    batchResult.foreach(result => {
-      if (!existFiles.contains(result._1 + ".txt")) {
-        uploadToHDFS(args(2) + result._1 + ".txt", fs, result._2)
-      } else {
-        // File with counts exist so needs to be updated
-        val stream = fs.open(new Path("/" + result._1 + ".txt"))
-        val values = stream.readLine()
-        values.split("\\|").foreach(tag => {
-          val tagValue = tag.split(":")(0)
-          val countValue = tag.split(":")(1)
-          // Sum counts
-          result._2 += (tagValue -> (result._2.getOrElse(tagValue, 0) + countValue.toInt))
-        })
-        uploadToHDFS(args(2) + result._1 + ".txt", fs, result._2)
-      }
-    })
+
   }
 
   /**
@@ -102,6 +114,10 @@ object SparkKafkaConsumer {
     val os = new BufferedOutputStream(output)
     os.write(result.map { case (k, v) => k + ":" + v }.mkString("|").getBytes("UTF-8"))
     os.close()
+  }
+
+  def buildJSONOffset(offset1: Int, offset2: Int, offset3: Int, offset4: Int,topic: String) : String = {
+    f"""{"$topic":{"0":$offset1, "1":$offset2, "2":$offset3, "3":$offset4}}"""
   }
 
 }

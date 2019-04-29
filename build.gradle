@@ -33,8 +33,7 @@ dependencies {
     compile group: 'org.scala-lang', name: 'scala-library', version: "$scalaVersion"
     compile group: 'org.apache.spark', name: "spark-streaming-kafka-0-10_$scalaCompatVersion", version: "$sparkVersion"
     compile group: 'org.apache.spark', name: 'spark-sql_2.11', version: "$sparkVersion"
-    compile group: 'org.apache.spark', name: 'spark-streaming_2.11', version: "$sparkVersion"
-    compile group: 'org.apache.spark', name: "spark-core_$scalaCompatVersion", version: "$sparkVersion"
+    compile group: 'org.rogach', name: 'scallop_2.11', version: '3.2.0'
 
     compile group: 'org.apache.spark', name: 'spark-sql-kafka-0-10_2.11', version: "$sparkVersion"
 
