@@ -5,6 +5,10 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.types.{DataTypes, StructType}
 import java.io.{BufferedOutputStream, BufferedReader, InputStreamReader}
 
+import org.apache.spark.SerializableWritable
+import org.json4s.JObject
+import org.json4s.jackson.JsonMethods
+
 import scala.collection.mutable
 
 object SparkKafkaConsumer {
@@ -18,16 +22,6 @@ object SparkKafkaConsumer {
 
     val conf = new Configuration(args)
     conf.verify()
-
-    var startingOffset = ""
-    var endingOffset = ""
-    if (args.length == 5) {
-      startingOffset = args(3)
-      endingOffset = args(4)
-    } else {
-      startingOffset = "earliest"
-      endingOffset = "latest"
-    }
 
     // Spark init
     val spark = org.apache.spark.sql.SparkSession.builder
@@ -58,29 +52,36 @@ object SparkKafkaConsumer {
       val messageProcessor = new MessageProcessor()
       spark.sparkContext.broadcast(messageProcessor)
 
+      val confBroadcast = spark.sparkContext.broadcast(new SerializableWritable(spark.sparkContext.hadoopConfiguration))
+
       import spark.sqlContext.implicits._
       import org.apache.spark.sql.functions._
 
+      val getText: String => String = JsonMethods.parse(_).asInstanceOf[JObject].values.getOrElse("text", "").toString
+      val getTextUdf = udf(getText _)
+
       val batchResult = df.selectExpr("CAST(value AS STRING)", "CAST(timestamp AS LONG) as timestamp").
         //extract message properties and timestamp
-        select(from_json('value, struct).as("json"), 'timestamp).select(col("json.*"), col("timestamp")).rdd
+        //select(from_json('value, struct).as("json"), 'timestamp).
+        withColumn("value", getTextUdf('value)).rdd
+//        .select(col("text"), col("timestamp")).rdd
         //aggregate each row to count tags
         .map(m => messageProcessor.process(m))
         // reduce result by timestamp and sum tags count
         .reduceByKey((map1, map2) => map1 ++ map2.map { case (k, v) => k -> (v + map1.getOrElse(k, 0)) })
 
-
-      // Upload result to hdfs
-      val hdfsPath = if(conf.hdfsPath().last == '/') conf.hdfsPath() else conf.hdfsPath()+"/"
-      val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
-      val filesIterator = fs.listFiles(new Path(hdfsPath), false)
-      var existFiles = mutable.MutableList[String]()
-      while (filesIterator.hasNext) {
-        existFiles += filesIterator.next().getPath.getName
-      }
-
       // Create new file or update exist
       batchResult.foreach(result => {
+
+        // Upload result to hdfs
+        val hdfsPath = if(conf.hdfsPath().last == '/') conf.hdfsPath() else conf.hdfsPath()+"/"
+        val fs = FileSystem.get(confBroadcast.value.value)
+        val filesIterator = fs.listFiles(new Path(hdfsPath), false)
+        var existFiles = mutable.MutableList[String]()
+        while (filesIterator.hasNext) {
+          existFiles += filesIterator.next().getPath.getName
+        }
+
         if (!existFiles.contains(result._1 + ".txt")) {
           uploadToHDFS(hdfsPath + result._1 + ".txt", fs, result._2)
         } else {
