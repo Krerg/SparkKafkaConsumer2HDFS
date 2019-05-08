@@ -41,7 +41,7 @@ object SparkKafkaConsumer {
         .option("endingOffsets", buildJSONOffset(offsets(0)+conf.batchSize().toInt,
           offsets(1)+conf.batchSize().toInt,
           offsets(2)+conf.batchSize().toInt,
-          offsets(3)+conf.batchSize().toInt,
+          0,
           conf.kafkaTopic()))
         .load()
 
@@ -58,13 +58,11 @@ object SparkKafkaConsumer {
       import org.apache.spark.sql.functions._
 
       val getText: String => String = JsonMethods.parse(_).asInstanceOf[JObject].values.getOrElse("text", "").toString
-      val getTextUdf = udf(getText _)
-
+      val getTextUdf = udf(getText)
+      val hdfsPathInput = conf.hdfsPath()
       val batchResult = df.selectExpr("CAST(value AS STRING)", "CAST(timestamp AS LONG) as timestamp").
         //extract message properties and timestamp
-        //select(from_json('value, struct).as("json"), 'timestamp).
         withColumn("value", getTextUdf('value)).rdd
-//        .select(col("text"), col("timestamp")).rdd
         //aggregate each row to count tags
         .map(m => messageProcessor.process(m))
         // reduce result by timestamp and sum tags count
@@ -74,7 +72,7 @@ object SparkKafkaConsumer {
       batchResult.foreach(result => {
 
         // Upload result to hdfs
-        val hdfsPath = if(conf.hdfsPath().last == '/') conf.hdfsPath() else conf.hdfsPath()+"/"
+        val hdfsPath = if(hdfsPathInput.last == '/') hdfsPathInput else hdfsPathInput+"/"
         val fs = FileSystem.get(confBroadcast.value.value)
         val filesIterator = fs.listFiles(new Path(hdfsPath), false)
         var existFiles = mutable.MutableList[String]()

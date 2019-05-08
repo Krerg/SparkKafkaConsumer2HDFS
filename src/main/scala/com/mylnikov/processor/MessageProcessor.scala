@@ -18,7 +18,7 @@ class MessageProcessor extends Serializable {
   val searchWords = Array("big data", "ai", "machine learning", "course")
 
   def process(row: Row): (String, mutable.Map[String, Int]) = {
-    aggregateText(row.getAs[String]("text"), row.getAs[Long]("timestamp"))
+    aggregateText(row.getAs[String]("value"), row.getAs[Long]("timestamp"))
   }
 
   /**
