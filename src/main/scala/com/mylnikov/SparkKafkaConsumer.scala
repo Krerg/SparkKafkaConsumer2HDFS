@@ -2,7 +2,6 @@ package com.mylnikov
 
 import com.mylnikov.processor.MessageProcessor
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.sql.types.{DataTypes, StructType}
 import java.io.{BufferedOutputStream, BufferedReader, InputStreamReader}
 
 import org.apache.spark.SerializableWritable
@@ -25,7 +24,7 @@ object SparkKafkaConsumer {
 
     // Spark init
     val spark = org.apache.spark.sql.SparkSession.builder
-        .master("local[2]")
+  //      .master("local[2]")
       .appName("SparkKafkaConsumer")
       .getOrCreate
 
@@ -41,13 +40,10 @@ object SparkKafkaConsumer {
         .option("endingOffsets", buildJSONOffset(offsets(0)+conf.batchSize().toInt,
           offsets(1)+conf.batchSize().toInt,
           offsets(2)+conf.batchSize().toInt,
-          0,
+          offsets(3)+conf.batchSize().toInt,
           conf.kafkaTopic()))
         .load()
 
-      // Message struct
-      val struct = new StructType()
-        .add("text", DataTypes.StringType)
 
       val messageProcessor = new MessageProcessor()
       spark.sparkContext.broadcast(messageProcessor)
