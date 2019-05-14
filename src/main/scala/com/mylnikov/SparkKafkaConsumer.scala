@@ -80,7 +80,7 @@ object SparkKafkaConsumer {
           uploadToHDFS(hdfsPath + result._1 + ".txt", fs, result._2)
         } else {
           // File with counts exist so needs to be updated
-          val stream = fs.open(new Path("/" + result._1 + ".txt"))
+          val stream = fs.open(new Path(hdfsPath + result._1 + ".txt"))
           val bufferedReader = new BufferedReader(new InputStreamReader(stream))
           val values = bufferedReader.readLine()
           values.split("\\|").foreach(tag => {
